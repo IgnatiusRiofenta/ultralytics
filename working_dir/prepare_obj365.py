@@ -13,8 +13,8 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import tarfile
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, as_completed
+import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -22,14 +22,6 @@ import numpy as np
 from ultralytics.utils import LOGGER, TQDM
 from ultralytics.utils.checks import check_requirements
 from ultralytics.utils.ops import xyxy2xywhn
-
-
-def _extract_patch(args: tuple) -> str:
-    """Extract one patch*.tar.gz into its parent directory."""
-    tar_path, images_dir = args
-    with tarfile.open(tar_path, "r:gz") as tar:
-        tar.extractall(images_dir, set_attrs=False)
-    return Path(tar_path).name
 
 
 def extract_and_flatten(images_dir: Path, workers: int) -> None:
@@ -40,10 +32,8 @@ def extract_and_flatten(images_dir: Path, workers: int) -> None:
         return
 
     LOGGER.info(f"  Extracting {len(tarballs)} patches ...")
-    with ProcessPoolExecutor(max_workers=workers) as ex:
-        futures = {ex.submit(_extract_patch, (str(t), str(images_dir))): t.name for t in tarballs}
-        for fut in as_completed(futures):
-            LOGGER.info(f"    {futures[fut]} done")
+    for t in TQDM(tarballs, desc="Extracting"):
+        subprocess.run(["tar", "xfz", str(t), "--directory", str(images_dir)], check=True)
 
     # Move all nested .jpg to images_dir (same as Objects365.yaml)
     files = list(images_dir.rglob("*.jpg"))
