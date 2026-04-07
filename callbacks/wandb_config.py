@@ -25,6 +25,9 @@ def log_config(**extra_kv):
         **extra_kv: Key-value pairs to set on trainer and log. For TextClassificationTrainer, these attrs already exist;
             for ClassificationTrainer, they're set via extra_kv.
     """
+    # Set group at creation time so DDP subprocesses inherit it via env
+    if "wandb_group" in extra_kv:
+        os.environ["WANDB_RUN_GROUP"] = extra_kv["wandb_group"]
 
     def callback(trainer):
         for k, v in extra_kv.items():
@@ -42,9 +45,7 @@ def log_config(**extra_kv):
         try:
             import wandb
 
-            # Set group via env var so wandb.init() picks it up
-            if "wandb_group" in config:
-                os.environ["WANDB_RUN_GROUP"] = config.pop("wandb_group")
+            config.pop("wandb_group", None)
             if wandb.run and config:
                 wandb.run.config.update(config, allow_val_change=True)
         except ImportError:
