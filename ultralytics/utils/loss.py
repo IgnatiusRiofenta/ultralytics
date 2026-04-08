@@ -1154,7 +1154,13 @@ class v8DepthLoss:
             (loss_sum, loss_items): Total loss and per-component losses.
         """
         loss = torch.zeros(2, device=self.device)  # [silog_loss, l1_loss]
-        pred_depth = preds["depth"]  # (B, 1, H, W)
+        # Handle both training (dict) and validation (tensor) prediction formats
+        if isinstance(preds, dict):
+            pred_depth = preds["depth"]
+        elif isinstance(preds, torch.Tensor):
+            pred_depth = preds
+        else:
+            pred_depth = preds[0] if isinstance(preds[0], torch.Tensor) else preds
         gt_depth = batch["depth"].to(self.device)  # (B, H, W)
 
         if gt_depth.ndim == 3:
