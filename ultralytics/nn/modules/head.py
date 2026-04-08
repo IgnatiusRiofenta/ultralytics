@@ -785,12 +785,12 @@ class Depth(nn.Module):
         >>> out = depth(x)  # (1, 1, 160, 160) if training
     """
 
-    def __init__(self, ch: tuple = (), c_mid: int = 256):
+    def __init__(self, c_mid: int = 256, ch: tuple = ()):
         """Initialize Depth head.
 
         Args:
-            ch: Tuple of input channel sizes from backbone feature maps (P3, P4, P5).
             c_mid: Number of intermediate channels for the fusion decoder.
+            ch: Tuple of input channel sizes from backbone feature maps (P3, P4, P5).
         """
         super().__init__()
         self.nl = len(ch)  # number of detection layers (pyramid levels)
