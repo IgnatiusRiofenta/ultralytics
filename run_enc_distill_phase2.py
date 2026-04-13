@@ -16,7 +16,7 @@ from pathlib import Path
 
 import torch
 
-from callbacks import cls_to_det_remap, grad_clip, muon_w, wandb_config
+from callbacks import grad_clip, muon_w, wandb_config
 from ultralytics import YOLO
 
 
@@ -80,8 +80,8 @@ def main(argv: list[str]) -> None:
     wandb_group = "downstream-coco" if mode == "coco_det" else "downstream-imagenet"
 
     model = YOLO(model_yaml)
-    if mode == "coco_det":
-        cls_to_det_remap.load(model, phase1_weights)
+    # NOTE: C2PSA remap tested and abandoned (17.77% vs 28.02% without remap).
+    # Standard pretrained= flow transfers backbone layers 0-8 via intersect_dicts.
     if mode in ("finetune", "coco_det"):
         model.add_callback("on_train_start", muon_w.override(0.1))
     model.add_callback("on_train_start", grad_clip.override(1.0))
@@ -97,7 +97,7 @@ def main(argv: list[str]) -> None:
         ),
     )
     train_args = dict(
-        pretrained=phase1_weights if mode != "coco_det" else False,
+        pretrained=phase1_weights,
         device=gpu if mode == "coco_det" else int(gpu),
         project=resume_args.get("project", "yolo-next-encoder"),
         save_dir=f"{NFS_RUNS}/{name}",
