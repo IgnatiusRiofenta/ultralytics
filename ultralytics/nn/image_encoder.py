@@ -59,15 +59,18 @@ class ImageEncoderLoss:
         l1_weight (float): Beta in EUPE Eq.5.
     """
 
-    def __init__(self, cos_weight=0.9, l1_weight=0.1):
+    def __init__(self, cos_weight=0.9, l1_weight=0.1, cls_l1=False):
         """Initialize ImageEncoderLoss.
 
         Args:
-            cos_weight (float): Alpha weight for cosine similarity in patch loss.
-            l1_weight (float): Beta weight for smooth L1 in patch loss.
+            cos_weight (float): Weight for cosine similarity (both CLS and patch).
+            l1_weight (float): Weight for smooth L1 (patch always, CLS if cls_l1=True).
+            cls_l1 (bool): Add smooth L1 to CLS loss. Default False matches EUPE Eq.5.
+            UNIC/DUNE use True with 0.5/0.5 weights (`unic/modeling/losses.py: 54`).
         """
         self.cos_weight = cos_weight
         self.l1_weight = l1_weight
+        self.cls_l1 = cls_l1
 
     def _teacher_loss(self, s_cls, s_patch, t_cls, t_patch):
         """Compute loss for a single teacher (EUPE Eq.5).
@@ -98,15 +101,23 @@ class ImageEncoderLoss:
         # Force fp32 for loss: fp16 cosine_similarity eps=1e-8 rounds to 0, causing nan on
         # near-zero features (random init). Follows DUNE (dune/model/losses.py:58).
         with torch.autocast(device_type=s_cls.device.type, dtype=torch.float32, enabled=s_cls.is_cuda):
-            # EUPE Eq.5 line 1: CLS cosine distance (skip for patches-only teachers)
+            # CLS loss (skip for patches-only teachers)
             if t_cls is not None:
-                cls_cos = 1.0 - F.cosine_similarity(s_cls, t_cls.to(s_cls), dim=-1).mean()
+                t_cls_ = t_cls.to(s_cls)
+                cls_cos = 1.0 - F.cosine_similarity(s_cls, t_cls_, dim=-1).mean()
+                cls_l1 = F.smooth_l1_loss(s_cls, t_cls_) if self.cls_l1 else torch.tensor(0.0, device=s_cls.device)
             else:
                 cls_cos = torch.tensor(0.0, device=s_cls.device)
-            # EUPE Eq.5 line 2: patch alpha*cosine + beta*smooth_L1
+                cls_l1 = torch.tensor(0.0, device=s_cls.device)
+            # Patch loss: alpha*cosine + beta*smooth_L1
             patch_cos = 1.0 - F.cosine_similarity(s_patch, t_patch, dim=-1).mean()
             patch_l1 = F.smooth_l1_loss(s_patch, t_patch)
-            loss = cls_cos + self.cos_weight * patch_cos + self.l1_weight * patch_l1
+            # Default (cls_l1=False): cls_cos + 0.9*patch_cos + 0.1*patch_l1 (EUPE Eq.5)
+            # UNIC mode (cls_l1=True): cos_w*cls_cos + l1_w*cls_l1 + cos_w*patch_cos + l1_w*patch_l1
+            cls_cos_w = self.cos_weight if self.cls_l1 else 1.0
+            loss = (
+                cls_cos_w * cls_cos + self.l1_weight * cls_l1 + self.cos_weight * patch_cos + self.l1_weight * patch_l1
+            )
 
         return loss, [cls_cos.detach(), patch_cos.detach(), patch_l1.detach()]
 
@@ -155,7 +166,9 @@ class ImageEncoderModel(ClassificationModel):
         teacher_grids (dict): Per-teacher spatial grid height {safe_name: int}.
     """
 
-    def __init__(self, cfg="yolo26s-cls.yaml", ch=3, nc=1000, verbose=True, teachers=None, proj_hidden_dim=None):
+    def __init__(
+        self, cfg="yolo26s-cls.yaml", ch=3, nc=1000, verbose=True, teachers=None, proj_hidden_dim=None, loss_cfg=None
+    ):
         """Initialize ImageEncoderModel with per-teacher adaptor heads.
 
         Args:
@@ -168,8 +181,10 @@ class ImageEncoderModel(ClassificationModel):
                 backward compat.
             proj_hidden_dim (int, optional): Adaptor MLP hidden dimension. None = use backbone dim (c_). EUPE uses 3072
                 for 86M+ students.
+            loss_cfg (dict, optional): Loss config with keys cos_weight, l1_weight, cls_l1. None = EUPE defaults.
         """
         super().__init__(cfg, ch, nc, verbose)
+        self._loss_cfg = loss_cfg or {}
         if teachers is None:
             teachers = {"eupe:vitb16": {"embed_dim": 768, "num_patches": 256, "token_types": ("cls", "patches")}}
 
@@ -274,4 +289,4 @@ class ImageEncoderModel(ClassificationModel):
 
     def init_criterion(self):
         """Initialize distillation loss."""
-        return ImageEncoderLoss()
+        return ImageEncoderLoss(**self._loss_cfg)
