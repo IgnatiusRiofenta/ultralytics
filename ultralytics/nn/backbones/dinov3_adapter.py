@@ -23,9 +23,10 @@ __all__ = ["DINOv3STAs"]
 DINOV3_HASH_SUFFIX = {
     "vits16": "08c60483",
     "vits16plus": "4057cbaa",
-    "vitb16": "89a2f178",
-    "vitl16": "380ff02b",
-    "vit7b16": "7c6f4400",
+    "vitb16": "73cec8be",
+    "vitl16": "8aa4cbdd",
+    "vith16plus": "7c1da9a5",
+    "vit7b16": "a955f4ea",
 }
 
 
