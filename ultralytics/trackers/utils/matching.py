@@ -110,21 +110,23 @@ def iou_distance(atracks: list, btracks: list) -> np.ndarray:
     return 1 - ious  # cost matrix
 
 
-def l2_distance(atracks: list, btracks: list) -> np.ndarray:
-    """Compute cost based on L2 (Euclidean) distance between bounding box centers.
+def l2_distance(atracks: list, btracks: list, img_shape: tuple = None) -> np.ndarray:
+    """Compute cost based on L2 (Euclidean) distance between bounding box centers, normalized by image diagonal.
 
     Args:
         atracks (list[STrack] | list[np.ndarray]): List of tracks 'a' or bounding boxes.
         btracks (list[STrack] | list[np.ndarray]): List of tracks 'b' or bounding boxes.
+        img_shape (tuple): Image shape as (height, width, ...). Used to normalize distances by image diagonal so that
+            the cost matrix values are resolution-independent and in [0, 1] range similar to IoU cost.
 
     Returns:
-        (np.ndarray): Cost matrix computed based on L2 distance with shape (len(atracks), len(btracks)).
+        (np.ndarray): Cost matrix computed based on normalized L2 distance with shape (len(atracks), len(btracks)).
 
     Examples:
         Compute L2 distance between two sets of tracks
         >>> atracks = [np.array([0, 0, 10, 10]), np.array([20, 20, 30, 30])]
         >>> btracks = [np.array([5, 5, 15, 15]), np.array([25, 25, 35, 35])]
-        >>> cost_matrix = l2_distance(atracks, btracks)
+        >>> cost_matrix = l2_distance(atracks, btracks, img_shape=(480, 640, 3))
     """
     a_bboxes = _get_track_bboxes(atracks)
     b_bboxes = _get_track_bboxes(btracks)
@@ -142,7 +144,12 @@ def l2_distance(atracks: list, btracks: list) -> np.ndarray:
         a_centers = (a_bboxes[:, :2] + a_bboxes[:, 2:4]) / 2
         b_centers = (b_bboxes[:, :2] + b_bboxes[:, 2:4]) / 2
 
-    return cdist(a_centers, b_centers, metric="euclidean").astype(np.float32)
+    dists = cdist(a_centers, b_centers, metric="euclidean").astype(np.float32)
+    if img_shape is not None:
+        h, w = img_shape[:2]
+        diag = np.sqrt(h**2 + w**2)
+        dists /= diag
+    return dists
 
 
 def embedding_distance(tracks: list, detections: list, metric: str = "cosine") -> np.ndarray:

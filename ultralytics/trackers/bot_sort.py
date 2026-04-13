@@ -114,6 +114,9 @@ class BOTrack(STrack):
             return self._tlwh.copy()
         ret = self.mean[:4].copy()
         ret[:2] -= ret[2:] / 2
+        w = getattr(self, "kalman_weight", 1.0)
+        if w < 1.0 and self.state == TrackState.Tracked:
+            ret = w * ret + (1 - w) * self._tlwh
         return ret
 
     @staticmethod
@@ -212,7 +215,7 @@ class BOTSORT(BYTETracker):
         """Calculate distances between tracks and detections using IoU or L2 and optionally ReID embeddings."""
         use_l2 = self.args.get("distance_metric", "iou") == "l2"
         if use_l2:
-            dists = matching.l2_distance(tracks, detections)
+            dists = matching.l2_distance(tracks, detections, img_shape=self.img_shape)
         else:
             dists = matching.iou_distance(tracks, detections)
 
@@ -223,7 +226,7 @@ class BOTSORT(BYTETracker):
             emb_dists = matching.embedding_distance(tracks, detections) / 2.0
             emb_dists[emb_dists > (1 - self.appearance_thresh)] = 1.0
             if use_l2:
-                # Gate by L2 pixel distance; pairs too far apart cannot match via appearance
+                # Gate by normalized L2 distance; pairs too far apart cannot match via appearance
                 emb_dists[dists > self.args.match_thresh] = 1.0
                 dists = emb_dists
             else:
