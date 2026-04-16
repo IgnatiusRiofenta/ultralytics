@@ -344,10 +344,7 @@ class BaseTrainer:
                 ema_model = ckpt.get("ema")
                 if ema_model is not None and hasattr(ema_model, "teacher_model"):
                     teacher = ema_model.teacher_model.float()
-            self.model = DistillationModel(
-                student_model=self.model,
-                teacher_model=teacher,
-            ).to(self.device)
+            self.model = DistillationModel(student_model=self.model, teacher_model=teacher).to(self.device)
             if "teacher_model." not in self.freeze_layer_names:
                 self.freeze_layer_names += ["teacher_model."]
         if self.world_size > 1:
