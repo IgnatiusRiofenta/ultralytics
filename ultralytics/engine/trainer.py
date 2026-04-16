@@ -63,7 +63,6 @@ from ultralytics.utils.torch_utils import (
     unset_deterministic,
     unwrap_model,
 )
-from ultralytics.nn.distill_model import DistillationModel
 
 
 class BaseTrainer:
@@ -359,9 +358,6 @@ class BaseTrainer:
         gs = max(int(model_for_stride.stride.max() if hasattr(model_for_stride, "stride") else 32), 32)  # max stride
         self.args.imgsz = check_imgsz(self.args.imgsz, stride=gs, floor=gs, max_dim=1)
         self.stride = gs  # for multiscale training
-
-        if self.world_size > 1:
-            self.model = nn.parallel.DistributedDataParallel(self.model, device_ids=[RANK], find_unused_parameters=True)
 
         # Batch size
         if self.batch_size < 1 and RANK == -1:  # single-GPU only, estimate best batch size
