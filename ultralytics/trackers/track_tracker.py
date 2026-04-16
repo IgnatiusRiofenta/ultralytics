@@ -17,12 +17,55 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import scipy.linalg
 
 from ..utils.ops import xywh2ltwh
 from .basetrack import BaseTrack, TrackState
 from .utils import matching
 from .utils.gmc import GMC
 from .utils.kalman_filter import KalmanFilterXYWH
+
+
+def _nsa_kalman_update(kf, mean: np.ndarray, covariance: np.ndarray, measurement: np.ndarray, confidence: float):
+    """NSA-Kalman update: scale the innovation covariance by (1 - confidence).
+
+    The standard Kalman update treats every measurement with the same noise model. NSA (Noise
+    Scale Adaptive, from StrongSORT) scales the measurement noise down for high-confidence
+    detections and up for low-confidence ones. In effect, a confident detection pulls the state
+    estimate harder toward the observation, while an uncertain detection has less influence.
+
+    Args:
+        kf (KalmanFilterXYWH): Kalman filter providing the projection matrix and std weights.
+        mean (np.ndarray): Predicted state mean.
+        covariance (np.ndarray): Predicted state covariance.
+        measurement (np.ndarray): Observed (x, y, w, h) box.
+        confidence (float): Detection confidence in [0, 1]; higher = less measurement noise.
+
+    Returns:
+        new_mean (np.ndarray): Updated state mean.
+        new_covariance (np.ndarray): Updated state covariance.
+    """
+    # Recompute projection so that NSA only scales the measurement noise R, not H P H^T
+    std = [
+        kf._std_weight_position * mean[2],
+        kf._std_weight_position * mean[3],
+        kf._std_weight_position * mean[2],
+        kf._std_weight_position * mean[3],
+    ]
+    # Clamp confidence to avoid collapsing R to zero when the detector is over-confident
+    scale = max(1.0 - float(confidence), 0.05)
+    innovation_cov = np.diag(np.square(std)) * scale
+    projected_mean = np.dot(kf._update_mat, mean)
+    projected_cov = np.linalg.multi_dot((kf._update_mat, covariance, kf._update_mat.T)) + innovation_cov
+
+    chol_factor, lower = scipy.linalg.cho_factor(projected_cov, lower=True, check_finite=False)
+    kalman_gain = scipy.linalg.cho_solve(
+        (chol_factor, lower), np.dot(covariance, kf._update_mat.T).T, check_finite=False
+    ).T
+    innovation = measurement - projected_mean
+    new_mean = mean + np.dot(innovation, kalman_gain.T)
+    new_covariance = covariance - np.linalg.multi_dot((kalman_gain, projected_cov, kalman_gain.T))
+    return new_mean, new_covariance
 
 
 def _bbox_overlaps(a_xyxy: np.ndarray, b_xyxy: np.ndarray) -> np.ndarray:
@@ -318,6 +361,7 @@ class TTSTrack(BaseTrack):
     """
 
     shared_kalman = KalmanFilterXYWH()
+    min_track_len = 3  # class-level default; overridden by TRACKTRACK.__init__ from config
 
     def __init__(self, xywh: list[float], score: float, cls: Any, feat: np.ndarray | None = None):
         """Initialize a new TTSTrack instance.
@@ -469,8 +513,9 @@ class TTSTrack(BaseTrack):
             new_id (bool): If True, assign a fresh track ID rather than reusing the old one.
         """
         self.prev_score = self.score
-        self.mean, self.covariance = self.kalman_filter.update(
-            self.mean, self.covariance, self.convert_coords(new_track.tlwh)
+        # NSA-Kalman update weights the measurement by detection confidence
+        self.mean, self.covariance = _nsa_kalman_update(
+            self.kalman_filter, self.mean, self.covariance, self.convert_coords(new_track.tlwh), new_track.score
         )
         self._history[frame_id] = (self.xyxy.copy(), new_track.score, self.mean.copy(), self.covariance.copy())
         if new_track.curr_feat is not None:
@@ -490,6 +535,9 @@ class TTSTrack(BaseTrack):
     def update(self, new_track: TTSTrack, frame_id: int):
         """Update a matched track with a fresh detection, refreshing velocity and ReID features.
 
+        Promotes the track from `New` to `Tracked` only after `min_track_len` successful matches,
+        matching the paper's requirement for a stable track before it enters the output.
+
         Args:
             new_track (TTSTrack): Matched detection for this frame.
             frame_id (int): Current frame ID.
@@ -499,8 +547,9 @@ class TTSTrack(BaseTrack):
         self.prev_score = self.score
 
         new_tlwh = new_track.tlwh
-        self.mean, self.covariance = self.kalman_filter.update(
-            self.mean, self.covariance, self.convert_coords(new_tlwh)
+        # NSA-Kalman update weights the measurement by detection confidence (StrongSORT)
+        self.mean, self.covariance = _nsa_kalman_update(
+            self.kalman_filter, self.mean, self.covariance, self.convert_coords(new_tlwh), new_track.score
         )
         self._history[frame_id] = (new_track.xyxy.copy(), new_track.score, self.mean.copy(), self.covariance.copy())
 
@@ -514,8 +563,10 @@ class TTSTrack(BaseTrack):
         if new_track.curr_feat is not None:
             self.update_features(new_track.curr_feat)
 
-        self.state = TrackState.Tracked
-        self.is_activated = True
+        # Promote to Tracked only after min_track_len consecutive matches
+        if self.state == TrackState.Tracked or self.tracklet_len >= self.min_track_len:
+            self.state = TrackState.Tracked
+            self.is_activated = True
         self.score = new_track.score
         self.cls = new_track.cls
         self.angle = new_track.angle
@@ -651,6 +702,7 @@ class TRACKTRACK:
         self.penalty_q = getattr(args, "penalty_q", 0.4)
         self.reduce_step = getattr(args, "reduce_step", 0.05)
         self.min_track_len = getattr(args, "min_track_len", 3)
+        TTSTrack.min_track_len = self.min_track_len  # propagate to track instances
         self.iou_weight = getattr(args, "iou_weight", 0.5)
         self.reid_weight = getattr(args, "reid_weight", 0.5)
         self.conf_weight = getattr(args, "conf_weight", 0.1)
@@ -724,7 +776,7 @@ class TRACKTRACK:
         cls_second = results.cls[inds_low]
 
         # Build detection objects; attach ReID features to high-confidence detections when enabled
-        if self.with_reid and self.encoder is not None and img is not None:
+        if self.with_reid and self.encoder is not None and img is not None and len(bboxes_keep) > 0:
             features = self.encoder(img, bboxes_keep)  # external ReID encoder crops from the full image
             dets_high = [TTSTrack(b, s, c, f) for b, s, c, f in zip(bboxes_keep, scores_keep, cls_keep, features)]
         else:
