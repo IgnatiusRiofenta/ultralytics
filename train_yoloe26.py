@@ -379,7 +379,7 @@ if args.trainer == "YOLOETrainerFromScratch" or args.trainer== "YOLOESegTrainerF
 elif args.trainer == "YOLOEVPTrainer":
     print("Using YOLOEVPTrainer for training.")
     # reinit the model.model.savpe.
-    model.model.model[-1].savpe.init_weights()
+    # model.model.model[-1].savpe.init_weights()
 
     # freeze every layer except of the savpe module.
     head_index = len(model.model.model) - 1
