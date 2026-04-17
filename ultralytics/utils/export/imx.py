@@ -244,7 +244,7 @@ def torch2imx(
         >>> path = torch2imx(model, "output_dir/", conf=0.25, iou=0.7, max_det=300)
 
     Notes:
-        - Requires model_compression_toolkit, onnx, edgemdt_tpc, and edge-mdt-cl packages
+        - Auto-installs Java>=17, model_compression_toolkit, onnx, edgemdt_tpc, and edge-mdt-cl packages if not present
         - Only supports YOLOv8n and YOLO11n models (detection, segmentation, pose, and classification tasks)
         - Output includes quantized ONNX model, IMX binary, and labels.txt file
     """

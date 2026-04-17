@@ -80,7 +80,8 @@ def onnx2saved_model(
         (keras.Model): Converted Keras model.
 
     Notes:
-        - Requires onnx2tf package. Downloads calibration data if INT8 quantization is enabled.
+        - Auto-installs tensorflow, onnx2tf, and all required dependencies if not present.
+        - Downloads calibration data if INT8 quantization is enabled.
         - Removes temporary files and renames quantized models after conversion.
     """
     cuda = torch.cuda.is_available()
@@ -204,7 +205,7 @@ def tflite2edgetpu(tflite_file: str | Path, output_dir: str | Path, prefix: str 
         (str): Path to the exported Edge TPU model file.
 
     Notes:
-        Requires the Edge TPU compiler to be installed. The function compiles the TFLite model
+        Auto-installs the Edge TPU compiler if not found. The function compiles the TFLite model
         for optimal performance on Google's Edge TPU hardware accelerator.
     """
     import subprocess
