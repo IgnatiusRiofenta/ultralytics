@@ -17,6 +17,8 @@ Why this module exists:
 Callers use ``run_paths(name)`` for fresh runs and ``patch_resume(ckpt)`` for resumes.
 """
 
+from __future__ import annotations
+
 from pathlib import Path
 
 WANDB_PROJECT = "yolo-next-encoder"
@@ -42,17 +44,19 @@ def run_paths(name: str, exist_ok: bool = False) -> dict:
     return dict(project=WANDB_PROJECT, name=name, save_dir=str(LOCAL_ROOT / name), exist_ok=exist_ok)
 
 
-def patch_resume(ckpt_path, name: str | None = None, device=None) -> str:
+def patch_resume(ckpt_path, name: str | None = None, device=None, data: str | None = None) -> str:
     """Rewrite a checkpoint's ``train_args`` to clean W&B project + absolute local save_dir, in place.
 
-    Needed because Ultralytics' ``check_resume`` restores project/name/save_dir from the checkpoint, not caller kwargs;
-    without this, a resume on a different machine or save_dir inherits whatever the original trainer baked in.
+    Needed because Ultralytics' ``check_resume`` restores project/name/save_dir/data from the checkpoint, not caller
+    kwargs; without this, a resume on a different machine or save_dir inherits whatever the original trainer baked in.
 
     Args:
         ckpt_path (str | Path): Checkpoint to patch (local or NFS path).
         name (str, optional): Override run name. Defaults to the checkpoint's existing name.
         device (int | str, optional): Override CUDA device (whitelisted for resume, e.g. when the new machine exposes
             the target physical GPU as a different CUDA index).
+        data (str, optional): Override dataset path, e.g. when the resuming host mounts the dataset at a different
+            location (``data`` is NOT in ``check_resume``'s override whitelist so it must be baked into the checkpoint).
 
     Returns:
         (str): Absolute path of the patched checkpoint (same as input, for chaining).
@@ -66,6 +70,8 @@ def patch_resume(ckpt_path, name: str | None = None, device=None) -> str:
     train_args.update(project=WANDB_PROJECT, name=run_name, save_dir=str(LOCAL_ROOT / run_name), exist_ok=True)
     if device is not None:
         train_args["device"] = device
+    if data is not None:
+        train_args["data"] = data
     ckpt["train_args"] = train_args
     torch.save(ckpt, ckpt_path)
     return str(ckpt_path)
