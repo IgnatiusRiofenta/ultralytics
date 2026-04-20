@@ -884,12 +884,19 @@ class DINOv2DPTHead(nn.Module):
         """RGB image → depth map in meters.
 
         Args:
-            x: Input tensor (B, 3, H, W). H and W must be divisible by 14.
+            x: Input tensor (B, 3, H, W).
 
         Returns:
             Training: dict with "depth" key → (B, 1, H, W).
             Inference: (B, 1, H, W).
         """
+        # DINOv2 patch size is 14; resize to nearest multiple of 14 if needed
+        H, W = x.shape[2:]
+        h14 = (H // 14) * 14
+        w14 = (W // 14) * 14
+        if h14 != H or w14 != W:
+            x = F.interpolate(x, (h14, w14), mode="bilinear", align_corners=False)
+
         depth = self.model(x)  # (B, H, W), non-negative via relu
         depth = depth.unsqueeze(1)  # (B, 1, H, W)
         depth = torch.sigmoid(depth) * self.max_depth
