@@ -162,7 +162,6 @@ The Ultralytics team benchmarked YOLO26 across various model formats and [precis
 
     - All models on systems except Intel Panther Lake family are run with `end2end=False`.
 
-
 ### Intel Core CPU
 
 The Intel® Core® series is a range of high-performance processors by Intel. The lineup includes Core i3 (entry-level), Core i5 (mid-range), Core i7 (high-end), and Core i9 (extreme performance). Each series caters to different computing needs and budgets, from everyday tasks to demanding professional workloads. With each new generation, improvements are made to performance, energy efficiency, and features.
