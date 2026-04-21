@@ -940,12 +940,12 @@ For inference pipelines that have no live-preview requirement, disabling display
 
 ### Cumulative Impact
 
-| Optimization                          | Approx. Memory Saved |
-| ------------------------------------- | -------------------- |
-| Disable desktop GUI                   | ~865 MB              |
-| Disable unused OS services            | ~32 MB               |
-| Headless inference pipeline (no display) | ~200+ MB          |
-| **Total (easy wins)**                 | **~1 GB+**           |
+| Optimization                             | Approx. Memory Saved |
+| ---------------------------------------- | -------------------- |
+| Disable desktop GUI                      | ~865 MB              |
+| Disable unused OS services               | ~32 MB               |
+| Headless inference pipeline (no display) | ~200+ MB             |
+| **Total (easy wins)**                    | **~1 GB+**           |
 
 Combining these changes is especially valuable when targeting TensorRT INT8 models on memory-constrained devices — it can be the difference between fitting a larger model variant in memory or not.
 
