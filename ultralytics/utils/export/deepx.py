@@ -14,6 +14,7 @@ def onnx2deepx(
     imgsz: tuple[int, int],
     dataset,
     metadata: dict | None = None,
+    opt_level: int = 0,
     prefix: str = "",
 ) -> Path:
     """Convert an ONNX model to DeepX format using the DeepX CLI tools.
@@ -67,7 +68,7 @@ def onnx2deepx(
         model=str(onnx_file),
         output_dir=str(export_path),
         config=str(config_path),
-        opt_level=0,
+        opt_level=opt_level,
     )
 
     if metadata is not None:

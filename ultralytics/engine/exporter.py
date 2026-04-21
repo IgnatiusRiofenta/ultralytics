@@ -1174,6 +1174,7 @@ class Exporter:
             imgsz=self.imgsz,
             dataset=self.get_int8_calibration_dataloader(prefix),
             metadata=self.metadata,
+            opt_level=getattr(self.args, "opt_level", 0),
             prefix=prefix,
         )
 
