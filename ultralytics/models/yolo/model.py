@@ -75,7 +75,7 @@ class YOLO(Model):
             # Continue with default YOLO initialization
             super().__init__(model=model, task=task, verbose=verbose)
             head_name = self.model.model[-1]._get_name() if hasattr(self.model, "model") else ""
-            if head_name == "DeimDecoder":
+            if head_name in {"DeimDecoder", "DFineDecoder"}:
                 from ultralytics import RTDETRDEIM
 
                 new_instance = RTDETRDEIM(self)
