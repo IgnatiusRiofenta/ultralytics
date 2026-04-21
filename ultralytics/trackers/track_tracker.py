@@ -240,7 +240,7 @@ def compute_dets_del(predictor) -> list | None:
         if not mask.any():
             out.append(None)
             continue
-        dels = loose[mask]
+        dels = loose[mask].cpu()
         xywh = ops.xyxy2xywh(dels[:, :4]).numpy()
         out.append((xywh, dels[:, 4].numpy(), dels[:, 5].numpy()))
 
