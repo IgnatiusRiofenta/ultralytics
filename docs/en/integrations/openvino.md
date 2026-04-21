@@ -160,7 +160,7 @@ The Ultralytics team benchmarked YOLO26 across various model formats and [precis
 
     - All benchmarks run with `openvino` Python package version [2026.1.0](https://pypi.org/project/openvino/2026.1.0/).
 
-    - All models on systems except Intel Panther Lake family are run with `end2end=False`.
+    - All models on Intel® Core™ Ultra™ systems with GPU and NPU except Intel Panther Lake family are run with `end2end=False`.
 
 ### Intel® Core™ Ultra
 
