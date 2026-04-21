@@ -1,10 +1,14 @@
 # Ultralytics 🚀 AGPL-3.0 License - https://ultralytics.com/license
 
 import math
+from copy import copy
 from pathlib import Path
 
 import numpy as np
-from ultralytics.utils import LOGGER
+import torch
+import torch.distributed as dist
+
+from ultralytics.utils import LOGGER, LOCAL_RANK, RANK
 
 
 class AFSSScheduler:
@@ -17,7 +21,7 @@ class AFSSScheduler:
 
     Attributes:
         num_images (int): Total number of images in the dataset.
-        tau (int): Warmup epoch count (ceiling of warmup_epochs).
+        warmup_epochs (float): Number of warmup epochs before AFSS sampling activates.
         seed (int): Random seed for deterministic sampling.
         state (dict[int, dict]): Per-image state containing precision, recall, and last_seen_epoch.
     """
@@ -31,7 +35,7 @@ class AFSSScheduler:
             seed (int): Random seed for deterministic sampling.
         """
         self.num_images = num_images
-        self.tau = math.ceil(warmup_epochs)
+        self.warmup_epochs = warmup_epochs
         self.seed = seed
         self.state = {i: {"precision": 0.0, "recall": 0.0, "last_seen_epoch": -1} for i in range(num_images)}
 
@@ -133,3 +137,125 @@ class AFSSScheduler:
                 continue
             self.state[idx]["precision"] = float(metrics.get("precision", 0.0))
             self.state[idx]["recall"] = float(metrics.get("recall", 0.0))
+
+
+def _unwrap_dataset(dataset):
+    """Unwrap a dataset from any dataloader wrapper layers."""
+    while hasattr(dataset, "dataset"):
+        dataset = dataset.dataset
+    return dataset
+
+
+def afss_on_epoch_start(trainer):
+    """AFSS callback: sample active indices at the start of each epoch after warmup."""
+    if not hasattr(trainer, "afss_scheduler"):
+        # Lazy init on first epoch
+        dataset = _unwrap_dataset(trainer.train_loader.dataset)
+
+        trainer.afss_scheduler = AFSSScheduler(
+            len(dataset), warmup_epochs=trainer.args.warmup_epochs, seed=trainer.args.seed
+        )
+        trainer.afss_current_indices = list(range(len(dataset)))
+
+        # Resume: restore scheduler state if available
+        afss_path = trainer.wdir / "afss_state.pt"
+        if afss_path.exists():
+            state = torch.load(afss_path, weights_only=False)
+            if len(state) == trainer.afss_scheduler.num_images:
+                trainer.afss_scheduler.state = state
+            else:
+                LOGGER.warning(
+                    f"AFSS resume state mismatch: expected {trainer.afss_scheduler.num_images} images, "
+                    f"got {len(state)}. Starting with fresh AFSS state."
+                )
+
+    epoch = trainer.epoch
+    if epoch < trainer.afss_scheduler.warmup_epochs:
+        return
+
+    selected_indices = trainer.afss_scheduler.sample_indices(epoch)
+
+    # DDP broadcast
+    if trainer.world_size > 1:
+        if RANK == 0:
+            broadcast_list = [selected_indices]
+        else:
+            broadcast_list = [None]
+        dist.broadcast_object_list(broadcast_list, src=0)
+        selected_indices = broadcast_list[0]
+
+    old_nb = trainer.nb
+    if trainer.world_size > 1:
+        # Rebuild loader for DDP so DistributedSampler sees new length
+        batch_size = trainer.batch_size // trainer.world_size
+        old_loader = trainer.train_loader
+        trainer.train_loader = trainer.get_dataloader(
+            trainer.data["train"],
+            batch_size=batch_size,
+            rank=LOCAL_RANK,
+            mode="train",
+            active_indices=selected_indices,
+        )
+        del old_loader
+
+        new_dataset = _unwrap_dataset(trainer.train_loader.dataset)
+
+        if trainer.args.close_mosaic and epoch >= (trainer.epochs - trainer.args.close_mosaic):
+            new_dataset.close_mosaic(hyp=copy(trainer.args))
+    else:
+        dataset = _unwrap_dataset(trainer.train_loader.dataset)
+        dataset.active_indices = selected_indices
+        trainer.train_loader.reset()
+
+    trainer.afss_current_indices = selected_indices
+    trainer.nb = len(trainer.train_loader)
+    # Adjust last_opt_step so optimizer stepping continues correctly when nb changes
+    if old_nb != trainer.nb:
+        trainer.last_opt_step -= epoch * (old_nb - trainer.nb)
+    LOGGER.info(f"AFSS epoch {epoch}: training on {len(selected_indices)}/{trainer.afss_scheduler.num_images} images")
+
+
+def afss_on_epoch_end(trainer):
+    """AFSS callback: update last seen and refresh metrics at the end of each epoch."""
+    if not hasattr(trainer, "afss_scheduler"):
+        return
+    epoch = trainer.epoch
+    trainer.afss_scheduler.update_last_seen(trainer.afss_current_indices, epoch)
+    offset = math.ceil(trainer.afss_scheduler.warmup_epochs)
+    if epoch >= trainer.afss_scheduler.warmup_epochs and (epoch - offset) % 5 == 0:
+        afss_refresh_metrics(trainer)
+
+
+def afss_refresh_metrics(trainer):
+    """Run validation on the training set to refresh per-image precision/recall for AFSS."""
+    batch_size = trainer.batch_size // max(trainer.world_size, 1)
+    train_eval_loader = trainer.get_dataloader(
+        trainer.data["train"], batch_size=batch_size, rank=LOCAL_RANK, mode="val"
+    )
+
+    validator = trainer.get_validator().__class__(
+        train_eval_loader,
+        save_dir=trainer.save_dir / "afss_train_eval",
+        args=copy(trainer.args),
+        _callbacks=trainer.callbacks,
+    )
+    validator(trainer)
+    del train_eval_loader
+
+    if RANK in {-1, 0}:
+        image_metrics = validator.metrics.box.image_metrics
+        dataset = _unwrap_dataset(trainer.train_loader.dataset)
+        filename_to_idx = {Path(f).name: i for i, f in enumerate(dataset.im_files)}
+        trainer.afss_scheduler.update_metrics(image_metrics, filename_to_idx)
+        LOGGER.info(f"AFSS: refreshed metrics for {len(image_metrics)} images")
+
+    if trainer.world_size > 1:
+        state_list = [trainer.afss_scheduler.state if RANK == 0 else None]
+        dist.broadcast_object_list(state_list, src=0)
+        trainer.afss_scheduler.state = state_list[0]
+
+
+def afss_save_state(trainer):
+    """Save AFSS scheduler state to a sidecar checkpoint file."""
+    if hasattr(trainer, "afss_scheduler") and RANK in {-1, 0}:
+        torch.save(trainer.afss_scheduler.state, trainer.wdir / "afss_state.pt")
