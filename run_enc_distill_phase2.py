@@ -8,17 +8,21 @@ Usage:
     mode: "inet_finetune" (ImageNet MuSGD ft), "inet_linear_probe" (ImageNet AdamW linear probe),
           "inet_adamw_finetune" (ImageNet AdamW ft), "coco_det_finetune" (COCO detection,
           yolo26s.pt-aligned recipe), "coco_det_finetune_frozen" (COCO det, frozen backbone),
-          "coco_pose_finetune" (COCO pose)
+          "coco_pose_finetune" (COCO pose), "dota_obb_finetune" (DOTA-v1.0 OBB,
+          yolo26s-obb.pt-aligned recipe)
 
 Flags:
     --resume <path>: resume from checkpoint (all modes)
     --fork_from <parent_id>:<fork_step>: wandb-fork continuation (all modes)
-    --lr <val>: override lr0. For coco_det_finetune this is the RECIPE lr0 at canonical
-                bs=128 and gets scaled by --batch. For other modes it is the FINAL lr0.
-    --batch <int>: override batch size. For coco_det_finetune, also scales lr0, nbs, and
-                warmup_epochs linearly (canonical bs=128, nbs=64 -> wd_eff and lr/sample
-                stay invariant). For other modes it is applied as-is.
-    --nbs <int>: explicit nbs override (coco_det_finetune; bypasses auto-scaling).
+    --lr <val>: override lr0. For coco_det_finetune and dota_obb_finetune this is the
+                RECIPE lr0 at canonical bs and gets scaled by --batch. For other modes
+                it is the FINAL lr0.
+    --batch <int>: override batch size. For coco_det_finetune (canonical bs=128, nbs=64)
+                and dota_obb_finetune (canonical bs=32, nbs=64), also scales lr0, nbs,
+                and warmup_epochs linearly so wd_eff and lr/sample stay invariant. For
+                other modes it is applied as-is.
+    --nbs <int>: explicit nbs override (coco_det_finetune, dota_obb_finetune; bypasses
+                auto-scaling).
 """
 
 import sys
@@ -52,6 +56,7 @@ def _load_train_args(resume: str) -> dict:
 
 
 _COCO_DET_MODES = ("coco_det_finetune", "coco_det_finetune_frozen")
+_SCALED_MODES = _COCO_DET_MODES + ("dota_obb_finetune",)
 
 _AUG_ARGS = dict(
     hsv_h=0.015,
@@ -90,8 +95,8 @@ def main(argv: list[str]) -> None:
     epochs = int(argv[5]) if len(argv) > 5 else None
     patience = int(argv[6]) if len(argv) > 6 else None
 
-    if mode in ("coco_det_finetune", "coco_det_finetune_frozen", "coco_pose_finetune"):
-        # Infer det/pose model from phase1 cls model (yolo26s-cls.yaml -> yolo26s.yaml / yolo26s-pose.yaml)
+    if mode in ("coco_det_finetune", "coco_det_finetune_frozen", "coco_pose_finetune", "dota_obb_finetune"):
+        # Infer det/pose/obb model from phase1 cls model (yolo26s-cls.yaml -> yolo26s{,-pose,-obb}.yaml)
         cls_yaml = "yolo26s-cls.yaml"
         args_yaml = Path(phase1_weights).parent.parent / "args.yaml"
         if args_yaml.exists():
@@ -99,10 +104,15 @@ def main(argv: list[str]) -> None:
                 if line.startswith("model:"):
                     cls_yaml = line.split(":", 1)[1].strip()
                     break
-        model_yaml = cls_yaml.replace("-cls", "-pose") if mode == "coco_pose_finetune" else cls_yaml.replace("-cls", "")
+        head_suffix = {"coco_pose_finetune": "-pose", "dota_obb_finetune": "-obb"}.get(mode, "")
+        model_yaml = cls_yaml.replace("-cls", head_suffix)
     else:
         model_yaml = "yolo26s-cls.yaml"
-    wandb_group = {"coco_det_finetune": "downstream-coco", "coco_pose_finetune": "downstream-coco-pose"}.get(mode, "downstream-imagenet")
+    wandb_group = {
+        "coco_det_finetune": "downstream-coco",
+        "coco_pose_finetune": "downstream-coco-pose",
+        "dota_obb_finetune": "downstream-dota-obb",
+    }.get(mode, "downstream-imagenet")
 
     model = YOLO(model_yaml)
     # NOTE: C2PSA remap tested and abandoned (17.77% vs 28.02% without remap).
@@ -126,7 +136,7 @@ def main(argv: list[str]) -> None:
     )
     train_args = dict(
         pretrained=phase1_weights,
-        device=gpu if mode == "coco_det_finetune" else int(gpu),
+        device=gpu if mode in ("coco_det_finetune", "dota_obb_finetune") else int(gpu),
         **paths.run_paths(name),
         cos_lr=True,
         warmup_bias_lr=0,
@@ -261,6 +271,60 @@ def main(argv: list[str]) -> None:
             erasing=0.4,
             auto_augment="randaugment",
         )
+    elif mode == "dota_obb_finetune":
+        # yolo26s-obb.pt canonical: batch=32, nbs=64, lr0=0.00125, warmup_epochs=1, degrees=180.
+        # Scale linearly when --batch overrides canonical so lr/sample, wd_eff = wd*batch/nbs,
+        # and warmup span (in samples) stay invariant.
+        obb_batch = int(batch_override) if batch_override else 32
+        obb_scale = obb_batch / 32.0
+        obb_nbs = max(1, int(nbs_override) if nbs_override else int(round(64 * obb_scale)))
+        obb_base_lr = float(lr_override) if lr_override else 0.00125
+        obb_lr0 = obb_base_lr * obb_scale
+        obb_warmup = 1.0 * obb_scale
+        print(
+            f"[dota_obb_finetune] batch={obb_batch} nbs={obb_nbs} lr0={obb_lr0:.5f} "
+            f"warmup_epochs={obb_warmup:.3f} (scale={obb_scale:.2f}x vs canonical bs=32)"
+        )
+        train_args.update(
+            data="DOTAv1.yaml",
+            epochs=epochs or 50,
+            batch=obb_batch,
+            imgsz=1024,
+            nbs=obb_nbs,
+            patience=patience or 100,
+            lr0=obb_lr0,
+            lrf=0.5,
+            momentum=0.937,
+            weight_decay=0.0005,
+            warmup_epochs=obb_warmup,
+            warmup_momentum=0.8,
+            warmup_bias_lr=0.1,
+            cos_lr=False,
+            close_mosaic=5,
+            end2end=True,
+            box=7.5,
+            cls=0.5,
+            dfl=6,
+            pose=12.0,
+            kobj=1.0,
+            mosaic=1.0,
+            mixup=0.1,
+            cutmix=0.0,
+            copy_paste=0.0,
+            copy_paste_mode="flip",
+            scale=0.9,
+            fliplr=0.5,
+            translate=0.1,
+            degrees=180,
+            shear=0.0,
+            hsv_h=0.015,
+            hsv_s=0.7,
+            hsv_v=0.4,
+            erasing=0.4,
+            auto_augment="randaugment",
+            optimizer="MuSGD",
+        )
+        model.add_callback("on_train_start", muon_w.override(0.5))
     else:  # inet_finetune (default)
         train_args.update(
             data="/data/shared-datasets/imagenet",
@@ -277,9 +341,9 @@ def main(argv: list[str]) -> None:
             optimizer="MuSGD",
             **_AUG_ARGS,
         )
-    # lr/batch/nbs are handled per-mode for coco_det_finetune (scaled); for other modes
-    # they apply as final values.
-    if mode not in _COCO_DET_MODES:
+    # lr/batch/nbs are handled per-mode for scaled modes (coco_det_finetune, dota_obb_finetune);
+    # for other modes they apply as final values.
+    if mode not in _SCALED_MODES:
         if lr_override:
             train_args["lr0"] = float(lr_override)
         if batch_override:
